@@ -9,32 +9,31 @@ import {
   MouseSensor,
   TouchSensor,
   type UniqueIdentifier,
-  useDroppable,
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
 import { snapCenterToCursor } from "@dnd-kit/modifiers";
-import {
-  SortableContext,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
 import { useNavigate } from "@tanstack/react-router";
-import { AnimatePresence, motion } from "framer-motion";
 import { produce } from "immer";
-import { Archive, ChevronRight, Clock, Flag, Plus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Archive, Clock, Flag } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { priorityColorsTaskCard } from "@/constants/priority-colors";
 import { useUpdateTask } from "@/hooks/mutations/task/use-update-task";
+import useGetCustomFieldValuesByProject, {
+  type CustomFieldValue,
+} from "@/hooks/queries/custom-field/use-get-custom-field-values-by-project";
 import { useRegisterShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { cn } from "@/lib/cn";
 import useBacklogBulkSelectionStore from "@/store/backlog-bulk-selection";
 import useProjectStore from "@/store/project";
 import type { ProjectWithTasks } from "@/types/project";
-import type Task from "@/types/task";
 import BacklogBulkToolbar from "../bulk-selection/backlog-bulk-toolbar";
 import CreateTaskModal from "../shared/modals/create-task-modal";
-import BacklogTaskRow from "./backlog-task-row";
+import BacklogSection, { type BacklogSectionId } from "./backlog-section";
+
+const dragModifiers = [snapCenterToCursor];
 
 type BacklogListViewProps = {
   project?: ProjectWithTasks;
@@ -47,25 +46,51 @@ function BacklogListView({
 }: BacklogListViewProps) {
   const { t } = useTranslation();
   const { mutate: updateTask } = useUpdateTask();
-  const { setProject } = useProjectStore();
+  const setProject = useProjectStore((state) => state.setProject);
   const {
     setAvailableTasks,
     focusNext,
     focusPrevious,
     focusedTaskId,
     clearFocus,
-  } = useBacklogBulkSelectionStore();
+  } = useBacklogBulkSelectionStore(
+    useShallow((state) => ({
+      setAvailableTasks: state.setAvailableTasks,
+      focusNext: state.focusNext,
+      focusPrevious: state.focusPrevious,
+      focusedTaskId: state.focusedTaskId,
+      clearFocus: state.clearFocus,
+    })),
+  );
   const navigate = useNavigate();
   const [activeId, setActiveId] = useState<UniqueIdentifier | null>(null);
   const [overColumnId, setOverColumnId] = useState<string | null>(null);
   const [expandedSections, setExpandedSections] = useState<
-    Record<string, boolean>
+    Record<BacklogSectionId, boolean>
   >({
     planned: true,
     archived: true,
   });
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [activeColumn, setActiveColumn] = useState<string | null>(null);
+
+  // Fetched once here instead of once per row: with N tasks and M values the
+  // per-row variant filtered the full list N times on every render.
+  const { data: projectCustomFieldValues } = useGetCustomFieldValuesByProject(
+    project?.id ?? "",
+  );
+  const customFieldValuesByTask = useMemo(() => {
+    const byTask = new Map<string, CustomFieldValue[]>();
+    for (const value of projectCustomFieldValues ?? []) {
+      const existing = byTask.get(value.taskId);
+      if (existing) {
+        existing.push(value);
+      } else {
+        byTask.set(value.taskId, [value]);
+      }
+    }
+    return byTask;
+  }, [projectCustomFieldValues]);
 
   useEffect(() => {
     if (project) {
@@ -119,16 +144,27 @@ function BacklogListView({
     },
   });
 
-  const sensors = useSensors(
-    useSensor(MouseSensor, {
+  // useSensor memoizes on the options object; fresh literals every render meant
+  // new sensors -> new DndContext value -> every useSortable row re-rendered on
+  // each parent render (e.g. the 30s tasks refetch).
+  const mouseSensorOptions = useMemo(
+    () => ({
       activationConstraint: { distance: disableDragDrop ? 999999 : 8 },
     }),
-    useSensor(TouchSensor, {
+    [disableDragDrop],
+  );
+  const touchSensorOptions = useMemo(
+    () => ({
       activationConstraint: {
         delay: disableDragDrop ? 999999 : 200,
         tolerance: 8,
       },
     }),
+    [disableDragDrop],
+  );
+  const sensors = useSensors(
+    useSensor(MouseSensor, mouseSensorOptions),
+    useSensor(TouchSensor, touchSensorOptions),
     useSensor(KeyboardSensor),
   );
 
@@ -281,125 +317,17 @@ function BacklogListView({
     setProject(updatedProject);
   };
 
-  const toggleSection = (sectionId: string) => {
+  const toggleSection = useCallback((sectionId: BacklogSectionId) => {
     setExpandedSections((prev) => ({
       ...prev,
       [sectionId]: !prev[sectionId],
     }));
-  };
+  }, []);
 
-  function BacklogSection({
-    sectionId,
-    title,
-    icon: IconComponent,
-    tasks,
-    showAddButton = false,
-  }: {
-    sectionId: string;
-    title: string;
-    icon: typeof Clock;
-    tasks: Task[];
-    showAddButton?: boolean;
-  }) {
-    const { setNodeRef } = useDroppable({
-      id: sectionId,
-      data: {
-        type: "column",
-        column: { id: sectionId, name: title },
-      },
-    });
-
-    const showDropIndicator = activeId && overColumnId === sectionId;
-
-    return (
-      <div
-        className={cn(
-          "border-b border-border/50 transition-colors duration-150 overflow-auto",
-          showDropIndicator && "border-l-4 border-l-ring bg-accent/35",
-        )}
-      >
-        <div className="flex items-center justify-between py-2 px-4 bg-muted/60 border-b border-border/50">
-          <button
-            type="button"
-            onClick={() => toggleSection(sectionId)}
-            className="flex items-center gap-2 text-sm font-medium text-foreground hover:text-foreground transition-colors"
-          >
-            <ChevronRight
-              className={cn(
-                "w-3 h-3 transition-transform",
-                expandedSections[sectionId] && "rotate-90",
-              )}
-            />
-            <div className="flex items-center gap-2 h-4">
-              <IconComponent className="w-4 h-4 flex-shrink-0 text-muted-foreground" />
-              <div className="flex items-center gap-1">
-                <span className="mt-1 mr-1">
-                  {t(`tasks:backlog.sections.${sectionId}`, {
-                    defaultValue: title,
-                  })}
-                </span>
-                <span className="text-xs text-muted-foreground mt-0.5">
-                  {tasks.length}
-                </span>
-              </div>
-            </div>
-          </button>
-
-          <div className="flex items-center gap-1">
-            {showAddButton && (
-              <button
-                type="button"
-                onClick={() => {
-                  setIsTaskModalOpen(true);
-                  setActiveColumn("planned");
-                }}
-                className="p-1 hover:bg-accent rounded text-muted-foreground hover:text-foreground transition-colors"
-                title={t("tasks:backlog.addTask")}
-              >
-                <Plus className="w-3 h-3" />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {expandedSections[sectionId] && (
-          <div
-            ref={setNodeRef}
-            className="bg-card transition-[translate,opacity] duration-150 ease-out starting:-translate-y-1 starting:opacity-0 motion-reduce:starting:translate-y-0"
-          >
-            <SortableContext
-              items={tasks}
-              strategy={verticalListSortingStrategy}
-            >
-              <AnimatePresence initial={false} mode="popLayout">
-                {tasks.map((task) => (
-                  <motion.div
-                    key={task.id}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15, ease: [0.23, 1, 0.32, 1] }}
-                  >
-                    <BacklogTaskRow task={task} />
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-            </SortableContext>
-
-            {tasks.length === 0 && (
-              <div className="py-6 px-4 text-center text-xs text-muted-foreground">
-                {t("tasks:backlog.noTasksInSection", {
-                  section: t(`tasks:backlog.sections.${sectionId}`, {
-                    defaultValue: title,
-                  }).toLowerCase(),
-                })}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
+  const handleAddPlannedTask = useCallback(() => {
+    setIsTaskModalOpen(true);
+    setActiveColumn("planned");
+  }, []);
 
   if (!project) {
     return null;
@@ -419,7 +347,7 @@ function BacklogListView({
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
-      modifiers={[snapCenterToCursor]}
+      modifiers={dragModifiers}
     >
       <div className="w-full h-full overflow-auto bg-muted/20">
         <div className="divide-y divide-border/50">
@@ -428,7 +356,12 @@ function BacklogListView({
             title={t("tasks:backlog.sections.planned")}
             icon={Clock}
             tasks={plannedTasks}
+            expanded={expandedSections.planned}
+            showDropIndicator={!!activeId && overColumnId === "planned"}
             showAddButton={true}
+            onToggle={toggleSection}
+            onAddTask={handleAddPlannedTask}
+            customFieldValuesByTask={customFieldValuesByTask}
           />
 
           <BacklogSection
@@ -436,6 +369,10 @@ function BacklogListView({
             title={t("tasks:backlog.sections.archived")}
             icon={Archive}
             tasks={archivedTasks}
+            expanded={expandedSections.archived}
+            showDropIndicator={!!activeId && overColumnId === "archived"}
+            onToggle={toggleSection}
+            customFieldValuesByTask={customFieldValuesByTask}
           />
         </div>
       </div>

@@ -8,8 +8,9 @@ import {
   CalendarX,
   SlidersHorizontal,
 } from "lucide-react";
-import { type CSSProperties, useMemo, useState } from "react";
+import { type CSSProperties, memo, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -27,7 +28,7 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/preview-card";
 import { useDeleteTask } from "@/hooks/mutations/task/use-delete-task";
-import useGetCustomFieldValuesByProject from "@/hooks/queries/custom-field/use-get-custom-field-values-by-project";
+import type { CustomFieldValue } from "@/hooks/queries/custom-field/use-get-custom-field-values-by-project";
 import useActiveWorkspace from "@/hooks/queries/workspace/use-active-workspace";
 import { useGetActiveWorkspaceUsers } from "@/hooks/queries/workspace-users/use-get-active-workspace-users";
 import { cn } from "@/lib/cn";
@@ -49,9 +50,10 @@ import { ContextMenu, ContextMenuTrigger } from "../ui/context-menu";
 
 type BacklogTaskRowProps = {
   task: Task;
+  customFieldValues: CustomFieldValue[];
 };
 
-export default function BacklogTaskRow({ task }: BacklogTaskRowProps) {
+function BacklogTaskRow({ task, customFieldValues }: BacklogTaskRowProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const {
@@ -63,8 +65,12 @@ export default function BacklogTaskRow({ task }: BacklogTaskRowProps) {
     isDragging,
   } = useSortable({ id: task.id });
 
-  const { project } = useProjectStore();
-  const taskIsCompleted = isTaskCompleted(task.status, project?.columns);
+  // Narrow store subscriptions so a row only re-renders when something it
+  // actually shows changes, not on every store update (focus moves, refetch...).
+  const projectId = useProjectStore((state) => state.project?.id);
+  const projectSlug = useProjectStore((state) => state.project?.slug);
+  const projectColumns = useProjectStore((state) => state.project?.columns);
+  const taskIsCompleted = isTaskCompleted(task.status, projectColumns);
   const { data: workspace } = useActiveWorkspace();
   const {
     showAssignees,
@@ -72,13 +78,29 @@ export default function BacklogTaskRow({ task }: BacklogTaskRowProps) {
     showDueDates,
     showLabels,
     showTaskNumbers,
-  } = useUserPreferencesStore();
+  } = useUserPreferencesStore(
+    useShallow((state) => ({
+      showAssignees: state.showAssignees,
+      showPriority: state.showPriority,
+      showDueDates: state.showDueDates,
+      showLabels: state.showLabels,
+      showTaskNumbers: state.showTaskNumbers,
+    })),
+  );
   const [isDeleteTaskModalOpen, setIsDeleteTaskModalOpen] = useState(false);
+  // The context menu content mounts a dozen hooks; only pay for it once the
+  // user has actually opened the menu for this row.
+  const [hasOpenedContextMenu, setHasOpenedContextMenu] = useState(false);
   const { mutateAsync: deleteTask } = useDeleteTask();
-  const { toggleSelection, isSelected, isFocused } =
-    useBacklogBulkSelectionStore();
-  const isTaskSelected = isSelected(task.id);
-  const isTaskFocused = isFocused(task.id);
+  const toggleSelection = useBacklogBulkSelectionStore(
+    (state) => state.toggleSelection,
+  );
+  const isTaskSelected = useBacklogBulkSelectionStore((state) =>
+    state.selectedTaskIds.has(task.id),
+  );
+  const isTaskFocused = useBacklogBulkSelectionStore(
+    (state) => state.focusedTaskId === task.id,
+  );
 
   const { data: workspaceUsers } = useGetActiveWorkspaceUsers(
     workspace?.id ?? "",
@@ -89,14 +111,6 @@ export default function BacklogTaskRow({ task }: BacklogTaskRowProps) {
       (member) => member.userId === task.userId,
     );
   }, [workspaceUsers, task.userId]);
-
-  const { data: projectCustomFieldValues = [] } =
-    useGetCustomFieldValuesByProject(task.projectId);
-
-  const customFieldValues = useMemo(
-    () => projectCustomFieldValues.filter((field) => field.taskId === task.id),
-    [projectCustomFieldValues, task.id],
-  );
 
   const activeCustomFieldValues = useMemo(
     () =>
@@ -113,7 +127,7 @@ export default function BacklogTaskRow({ task }: BacklogTaskRowProps) {
   };
 
   const handleClick = (e: React.MouseEvent) => {
-    if (!project || !task) return;
+    if (!projectId || !task) return;
     if (e.defaultPrevented) return;
 
     if (e.metaKey || e.ctrlKey) {
@@ -167,7 +181,11 @@ export default function BacklogTaskRow({ task }: BacklogTaskRowProps) {
         isTaskFocused && "ring-2 ring-inset ring-ring/50",
       )}
     >
-      <ContextMenu>
+      <ContextMenu
+        onOpenChange={(open) => {
+          if (open) setHasOpenedContextMenu(true);
+        }}
+      >
         <ContextMenuTrigger asChild>
           {/* biome-ignore lint/a11y/noStaticElementInteractions: false positive for onClick and onKeyDown */}
           <div
@@ -187,7 +205,7 @@ export default function BacklogTaskRow({ task }: BacklogTaskRowProps) {
             )}
             {showTaskNumbers && (
               <div className="text-xs font-mono text-muted-foreground flex-shrink-0">
-                {project?.slug}-{task.number}
+                {projectSlug}-{task.number}
               </div>
             )}
 
@@ -294,11 +312,11 @@ export default function BacklogTaskRow({ task }: BacklogTaskRowProps) {
           </div>
         </ContextMenuTrigger>
 
-        {project && workspace && (
+        {hasOpenedContextMenu && projectId && workspace && (
           <TaskCardContextMenuContent
             task={task}
             taskCardContext={{
-              projectId: project.id,
+              projectId,
               worskpaceId: workspace.id,
             }}
             onDeleteClick={() => setIsDeleteTaskModalOpen(true)}
@@ -338,3 +356,5 @@ export default function BacklogTaskRow({ task }: BacklogTaskRowProps) {
     </div>
   );
 }
+
+export default memo(BacklogTaskRow);
