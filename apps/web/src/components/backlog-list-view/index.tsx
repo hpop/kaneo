@@ -69,7 +69,9 @@ function BacklogListView({
     Record<BacklogSectionId, boolean>
   >({
     planned: true,
-    archived: true,
+    // Archived usually holds far more tasks than planned; start it collapsed
+    // so the view opens on what people actually work with.
+    archived: false,
   });
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [activeColumn, setActiveColumn] = useState<string | null>(null);

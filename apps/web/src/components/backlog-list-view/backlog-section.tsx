@@ -55,6 +55,9 @@ function BacklogSection({
 
   return (
     <div
+      // Droppable on the whole section (header included) so tasks can be
+      // dropped onto a collapsed section as well.
+      ref={setNodeRef}
       className={cn(
         "border-b border-border/50 transition-colors duration-150 overflow-auto",
         showDropIndicator && "border-l-4 border-l-ring bg-accent/35",
@@ -102,10 +105,7 @@ function BacklogSection({
       </div>
 
       {expanded && (
-        <div
-          ref={setNodeRef}
-          className="bg-card transition-[translate,opacity] duration-150 ease-out starting:-translate-y-1 starting:opacity-0 motion-reduce:starting:translate-y-0"
-        >
+        <div className="bg-card transition-[translate,opacity] duration-150 ease-out starting:-translate-y-1 starting:opacity-0 motion-reduce:starting:translate-y-0">
           <SortableContext items={tasks} strategy={verticalListSortingStrategy}>
             <AnimatePresence initial={false} mode="popLayout">
               {tasks.map((task) => (
